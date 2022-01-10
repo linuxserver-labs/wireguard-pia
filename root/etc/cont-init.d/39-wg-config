@@ -1,0 +1,353 @@
+#!/usr/bin/with-contenv bash
+
+# Copyright (C) 2020 Private Internet Access, Inc.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+
+# This function creates a timestamp, to use for setting $TOKEN_EXPIRATION
+function timeout_timestamp() {
+  date +"%c" --date='1 day' # Timestamp 24 hours
+}
+
+mkdir -p /opt/piavpn-manual
+echo -e "Variables set:\\n\
+PIA_PASS=${PIA_PASS}\\n\
+PIA_USER=${PIA_USER}\\n\
+LAN_NETWORK=${LAN_NETWORK}"
+
+
+if [[ -z "${PIA_USER}" || -z "${PIA_PASS}" ]]; then
+  echo If you want this script to automatically get a token from the Meta
+  echo service, please add the variables PIA_USER and PIA_PASS. Example:
+  echo $ PIA_USER=p0123456 PIA_PASS=xxx
+  exit 1
+fi
+
+tokenLocation=/opt/piavpn-manual/token
+
+echo -n "Checking login credentials..."
+
+generateTokenResponse=$(curl -s -u "${PIA_USER}:${PIA_PASS}" \
+  "https://www.privateinternetaccess.com/gtoken/generateToken")
+
+if [ "$(echo "$generateTokenResponse" | jq -r '.status')" != "OK" ]; then
+  echo
+  echo
+  echo -e "Could not authenticate with the login credentials provided!"
+  echo
+  exit
+fi
+  
+echo -e OK!
+echo
+token=$(echo "$generateTokenResponse" | jq -r '.token')
+tokenExpiration=$(timeout_timestamp)
+PIA_TOKEN=$token
+echo $token > /opt/piavpn-manual/token || exit 1
+echo $tokenExpiration >> /opt/piavpn-manual/token
+echo
+echo "PIA_TOKEN=$PIA_TOKEN"
+echo This token will expire in 24 hours, on $tokenExpiration.
+echo
+
+# If the server list has less than 1000 characters, it means curl failed.
+function check_all_region_data() {
+  echo
+  echo -n "Getting the server list..."
+
+  if [[ ${#all_region_data} -lt 1000 ]]; then
+    echo -e "Could not get correct region data. To debug this, run:"
+    echo "$ curl -v $serverlist_url"
+    echo -e "If it works, you will get a huge JSON as a response."
+    exit 1
+  fi
+  
+  # Notify the user that we got the server list.
+  echo -e "OK!
+  "
+}
+
+# Get all data for the selected region
+# Exit with code 1 if the REGION_ID provided is invalid
+function get_selected_region_data() {
+  regionData="$( echo $all_region_data |
+  jq --arg REGION_ID "$selectedRegion" -r \
+  '.regions[] | select(.id==$REGION_ID)')"
+  if [[ ! $regionData ]]; then
+    echo -e "The REGION_ID $selectedRegion is not valid.
+    "
+    exit 1
+  fi
+}
+
+mkdir -p /opt/piavpn-manual
+# Erase old latencyList file
+rm -f /opt/piavpn-manual/latencyList
+touch /opt/piavpn-manual/latencyList
+
+# This allows you to set the maximum allowed latency in seconds.
+# All servers that respond slower than this will be ignored.
+# You can inject this with the environment variable MAX_LATENCY.
+# The default value is 50 milliseconds.
+MAX_LATENCY=${MAX_LATENCY:-0.05}
+export MAX_LATENCY
+
+serverlist_url='https://serverlist.piaservers.net/vpninfo/servers/v6'
+
+# This function checks the latency you have to a specific region.
+# It will print a human-readable message to stderr,
+# and it will print the variables to stdout
+printServerLatency() {
+  serverIP="$1"
+  regionID="$2"
+  regionName="$(echo ${@:3} |
+    sed 's/ false//' | sed 's/true/(geo)/')"
+  time=$(LC_NUMERIC=en_US.utf8 curl -o /dev/null -s \
+    --connect-timeout $MAX_LATENCY \
+    --write-out "%{time_connect}" \
+    http://$serverIP:443)
+  if [ $? -eq 0 ]; then
+    >&2 echo Got latency ${time}s for region: $regionName id: $regionID
+    echo $time $regionID $serverIP
+    # Write a list of servers with acceptable latancy
+    # to /opt/piavpn-manual/latencyList
+    echo -e $time $regionID'\t'$serverIP'\t'$regionName >> /opt/piavpn-manual/latencyList
+  fi
+  # Sort the latencyList, ordered by latency
+  sort -no /opt/piavpn-manual/latencyList /opt/piavpn-manual/latencyList
+}
+export -f printServerLatency
+
+# If a server location or autoconnect isn't specified, set the variable to false/no.
+if [[ -z "$PREFERRED_REGION" ]]; then
+  PREFERRED_REGION=none
+fi
+if [[ -z "$VPN_PROTOCOL" ]]; then
+  VPN_PROTOCOL=no
+fi
+
+# Get all region data
+all_region_data=$(curl -s "$serverlist_url" | head -1)
+
+# Set the region the user has specified
+selectedRegion=$PREFERRED_REGION
+
+# If a server isn't being specified, auto-select the server with the lowest latency
+if [[ $selectedRegion == "none" ]]; then
+  selectedOrLowestLatency="lowest latency"
+  check_all_region_data
+
+  # Making sure this variable doesn't contain some strange string
+  if [ "$PIA_PF" != true ]; then
+    PIA_PF="false"
+  fi
+
+  # Test one server from each region to get the closest region.
+  # If port forwarding is enabled, filter out regions that don't support it.
+  if [[ $PIA_PF == "true" ]]; then
+    echo Port Forwarding is enabled, non-PF servers excluded.
+    echo
+    summarized_region_data="$( echo $all_region_data |
+      jq -r '.regions[] | select(.port_forward==true) |
+      .servers.meta[0].ip+" "+.id+" "+.name+" "+(.geo|tostring)' )"
+  else
+    summarized_region_data="$( echo $all_region_data |
+    jq -r '.regions[] |
+    .servers.meta[0].ip+" "+.id+" "+.name+" "+(.geo|tostring)' )"
+  fi
+  echo -e Testing regions that respond \
+    faster than $MAX_LATENCY seconds:
+  selectedRegion="$(echo "$summarized_region_data" |
+    xargs -I{} bash -c 'printServerLatency {}' |
+    sort | head -1 | awk '{ print $2 }')"
+  echo
+
+  if [ -z "$selectedRegion" ]; then
+    echo -e No region responded within ${MAX_LATENCY}s, consider using a higher timeout.
+    echo For example, to wait 1 second for each region, inject MAX_LATENCY=1 like this:
+    exit 1
+  else
+    echo -e "A list of servers and connection details, ordered by latency can be 
+found in at : /opt/piavpn-manual/latencyList
+"
+  fi
+else
+  selectedOrLowestLatency="selected"
+  check_all_region_data
+fi
+
+get_selected_region_data
+
+bestServer_meta_IP="$(echo $regionData | jq -r '.servers.meta[0].ip')"
+bestServer_meta_hostname="$(echo $regionData | jq -r '.servers.meta[0].cn')"
+bestServer_WG_IP="$(echo $regionData | jq -r '.servers.wg[0].ip')"
+bestServer_WG_hostname="$(echo $regionData | jq -r '.servers.wg[0].cn')"
+bestServer_OT_IP="$(echo $regionData | jq -r '.servers.ovpntcp[0].ip')"
+bestServer_OT_hostname="$(echo $regionData | jq -r '.servers.ovpntcp[0].cn')"
+bestServer_OU_IP="$(echo $regionData | jq -r '.servers.ovpnudp[0].ip')"
+bestServer_OU_hostname="$(echo $regionData | jq -r '.servers.ovpnudp[0].cn')"
+
+
+if [[ $VPN_PROTOCOL == "no" ]]; then
+  echo -ne The $selectedOrLowestLatency region is "$(echo $regionData | jq -r '.name')"
+  if echo $regionData | jq -r '.geo' | grep true > /dev/null; then
+    echo " (geolocated region)."
+  else
+    echo "."
+  fi
+  echo -e "
+The script found the best servers from the region you selected.
+When connecting to an IP (no matter which protocol), please verify
+the SSL/TLS certificate actually contains the hostname so that you
+are sure you are connecting to a secure server, validated by the
+PIA authority. Please find below the list of best IPs and matching
+hostnames for each protocol:
+Meta Services $bestServer_meta_IP\t-     $bestServer_meta_hostname
+WireGuard     $bestServer_WG_IP\t-     $bestServer_WG_hostname
+"
+fi
+# Display variables for troubleshooting
+PIA_PF=$PIA_PF
+WG_SERVER_IP=$bestServer_WG_IP
+WG_HOSTNAME=$bestServer_WG_hostname
+
+# PIA currently does not support IPv6. In order to be sure your VPN
+# connection does not leak, it is best to disabled IPv6 altogether.
+# IPv6 can also be disabled via kernel commandline param, so we must
+# first check if this is the case.
+if [[ -f /proc/net/if_inet6 ]] &&
+  [[ $(sysctl -n net.ipv6.conf.all.disable_ipv6) -ne 1 ||
+     $(sysctl -n net.ipv6.conf.default.disable_ipv6) -ne 1 ]]
+then
+  echo 'You should consider disabling IPv6 by running:'
+  echo 'sysctl -w net.ipv6.conf.all.disable_ipv6=1'
+  echo 'sysctl -w net.ipv6.conf.default.disable_ipv6=1'
+fi
+
+# Create ephemeral wireguard keys, that we don't need to save to disk.
+privKey="$(wg genkey)"
+export privKey
+pubKey="$( echo "$privKey" | wg pubkey)"
+export pubKey
+
+# Authenticate via the PIA WireGuard RESTful API.
+# This will return a JSON with data required for authentication.
+# The certificate is required to verify the identity of the VPN server.
+# In case you didn't clone the entire repo, get the certificate from:
+# https://github.com/pia-foss/manual-connections/blob/master/ca.rsa.4096.crt
+# In case you want to troubleshoot the script, replace -s with -v.
+echo Trying to connect to the PIA WireGuard API on $WG_SERVER_IP...
+wireguard_json="$(curl -s -G \
+  --connect-to "$WG_HOSTNAME::$WG_SERVER_IP:" \
+  --cacert "/wireguard-pia/ca.rsa.4096.crt" \
+  --data-urlencode "pt=${PIA_TOKEN}" \
+  --data-urlencode "pubkey=$pubKey" \
+  "https://${WG_HOSTNAME}:1337/addKey" )"
+export wireguard_json
+
+# Check if the API returned OK and stop this script if it didn't.
+if [ "$(echo "$wireguard_json" | jq -r '.status')" != "OK" ]; then
+  >&2 echo -e "Server did not return OK. Stopping now."
+  exit 1
+fi
+
+# Create the WireGuard config based on the JSON received from the API
+# In case you want this section to also add the DNS setting, please
+# start the script with PIA_DNS=true.
+# This uses a PersistentKeepalive of 25 seconds to keep the NAT active
+# on firewalls. You can remove that line if your network does not
+# require it.
+if [ "$PIA_DNS" == true ]; then
+  dnsServer="$(echo "$wireguard_json" | jq -r '.dns_servers[0]')"
+  echo Trying to set up DNS to $dnsServer. In case you do not have resolvconf,
+  echo this operation will fail and you will not get a VPN. If you have issues,
+  echo start this script without PIA_DNS.
+  echo
+  dnsSettingForVPN="DNS = $dnsServer"
+else dnsSettingForVPN="DNS =$(echo "$wireguard_json" | jq -r '.dns_servers[0]')"
+fi
+echo -n "Trying to write /config/wg0.conf..."
+
+LAN_NETWORK=${LAN_NETWORK}
+# split comma separated string into array from LAN_NETWORK env variable
+IFS=',' read -ra lan_network_array <<< "${LAN_NETWORK}"
+DROUTE=$(ip route | grep default | awk '{print $3}'); 
+
+create_postup() {
+ip_route_add=''
+chain_route_add=''
+# process lan networks in the array
+for lan_network_item in $(echo "$LAN_NETWORK" | tr "," " "); do
+  if [[ "${lan_network_item}" = "${lan_network_array[0]}" ]]; then
+	  ip_route_add+="ip route add ${lan_network_item} via ${DROUTE}; "
+  else
+    ip_route_add+="ip route add ${lan_network_item} via ${DROUTE}; "
+  fi
+done
+for lan_network_item in $(echo "$LAN_NETWORK" | tr "," " "); do
+	# strip whitespace from start and end of lan_network_item
+	lan_network_item=$(echo "${lan_network_item}" | sed -e 's~^[ \t]*~~;s~[ \t]*$~~')
+	#echo "[info] Adding ${lan_network_item} as route via ${DROUTE}"
+  if [[ "${lan_network_item}" = "${lan_network_array[0]}" ]]; then
+	  chain_route_add+="iptables -I OUTPUT -d ${lan_network_item} -j ACCEPT; "
+  else
+    chain_route_add+="iptables -A OUTPUT -d ${lan_network_item} -j ACCEPT; "
+  fi
+done
+echo "${ip_route_add}""${chain_route_add} iptables -A OUTPUT ! -o %i -m mark ! --mark \$(wg show %i fwmark) -m addrtype ! --dst-type LOCAL -j REJECT;"
+}
+
+create_predown() {
+ip_route_delete=''
+chain_route_delete=''
+# process lan networks in the array
+for lan_network_item in $(echo "$LAN_NETWORK" | tr "," " "); do
+	ip_route_delete+="ip route delete ${lan_network_item}; "
+done
+for lan_network_item in $(echo "$LAN_NETWORK" | tr "," " "); do
+	# strip whitespace from start and end of lan_network_item
+	lan_network_item=$(echo "${lan_network_item}" | sed -e 's~^[ \t]*~~;s~[ \t]*$~~')
+	#echo "[info] Adding ${lan_network_item} as route via ${DROUTE}"
+	chain_route_delete+="iptables -D OUTPUT -d ${lan_network_item} -j ACCEPT; "
+ 
+done
+echo "${ip_route_delete}""iptables -D OUTPUT ! -o %i -m mark ! --mark \$(wg show %i fwmark) -m addrtype ! --dst-type LOCAL -j REJECT;" "${chain_route_delete}"
+}
+
+if [[ "$LAN_NETWORK" ]]; then
+  PostUp=$(create_postup)
+  PreDown=$(create_predown)
+fi
+
+echo "
+[Interface]
+Address = $(echo "$wireguard_json" | jq -r '.peer_ip')
+PrivateKey = $privKey
+DNS = $(echo "$wireguard_json" | jq -r '.dns_servers[0]')
+PostUp = "$PostUp"
+PreDown = "$PreDown"
+
+[Peer]
+PersistentKeepalive = 25
+PublicKey = $(echo "$wireguard_json" | jq -r '.server_key')
+AllowedIPs = 0.0.0.0/0
+Endpoint = ${WG_SERVER_IP}:$(echo "$wireguard_json" | jq -r '.server_port')
+" > /config/wg0.conf || exit 1
+echo -e OK!
