@@ -1,10 +1,10 @@
-# wireguard-pia - Docker mod for linuxserver/docker-wireguard.
+# wireguard-pia - Docker mod for linuxserver/docker-wireguard
 
-## WIP
+## WIP - NOT SUPPORTED
 
-This is a slightly edited version of the scripts in the https://github.com/pia-foss/manual-connections/ repo. 
+This is a slightly edited version of the scripts in the https://github.com/pia-foss/manual-connections/ repo.
 
-It will automatically create a wg0.conf config in /config
+It will automatically create a wg0.conf file in /config
 
 ## Usage
 
@@ -71,5 +71,4 @@ docker run -d \
 | `-e PIA_PASS=password` | Your PIA password |
 | `-e LAN_NETWORK=192.168.0.0/24,172.17.0.0/16` | Comma separated values. Creates the PostUp and PreDown commands with the supplied values. |
 | `-e MAX_LATENCY=0.05` | numeric value, in seconds # Optional Default is 0.05 |
-| `-e PREFERRED_REGION` | The region ID for a PIA server
-If called without specifying `PREFERRED_REGION` this script writes a list of servers within lower than `MAX_LATENCY` to `/opt/piavpn-manual/latencyList` for reference, and auto-selects the server with the lowest latency|
+| `-e PREFERRED_REGION` | The region ID for a PIA server. If called without specifying `PREFERRED_REGION` this script writes a list of servers within lower than `MAX_LATENCY` to `/opt/piavpn-manual/latencyList` for reference, and auto-selects the server with the lowest latency |
