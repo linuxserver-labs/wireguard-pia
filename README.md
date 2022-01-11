@@ -26,7 +26,7 @@ services:
       - PUID=1000
       - PGID=1000
       - TZ=Europe/London
-      - DOCKER_MOD=ghcr.io/linuxserver-labs/wireguard-pia
+      - DOCKER_MODS=ghcr.io/linuxserver-labs/wireguard-pia
       - PIA_USER=p123456
       - PIA_PASS=password
       - LAN_NETWORK=192.168.0.0/24,172.17.0.0/16 # Comma separated values
@@ -50,7 +50,7 @@ docker run -d \
   -e PUID=1000 \
   -e PGID=1000 \
   -e TZ=Europe/London \
-  -e DOCKER_MOD=ghcr.io/linuxserver-labs/wireguard-pia \
+  -e DOCKER_MODS=ghcr.io/linuxserver-labs/wireguard-pia \
   -e PIA_USER=p123456 \
   -e PIA_PASS=password \
   -e LAN_NETWORK=192.168.0.0/24,172.17.0.0/16 `# Comma separated values` \
