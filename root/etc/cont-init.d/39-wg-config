@@ -40,8 +40,6 @@ if [[ -z "${PIA_USER}" || -z "${PIA_PASS}" ]]; then
   exit 1
 fi
 
-tokenLocation=/opt/piavpn-manual/token
-
 echo -n "Checking login credentials..."
 
 generateTokenResponse=$(curl -s -u "${PIA_USER}:${PIA_PASS}" \
@@ -60,11 +58,11 @@ echo
 token=$(echo "$generateTokenResponse" | jq -r '.token')
 tokenExpiration=$(timeout_timestamp)
 PIA_TOKEN=$token
-echo $token > /opt/piavpn-manual/token || exit 1
-echo $tokenExpiration >> /opt/piavpn-manual/token
+echo "$token" > /opt/piavpn-manual/token || exit 1
+echo "$tokenExpiration" >> /opt/piavpn-manual/token
 echo
 echo "PIA_TOKEN=$PIA_TOKEN"
-echo This token will expire in 24 hours, on $tokenExpiration.
+echo This token will expire in 24 hours, on "$tokenExpiration".
 echo
 
 # If the server list has less than 1000 characters, it means curl failed.
@@ -87,7 +85,7 @@ function check_all_region_data() {
 # Get all data for the selected region
 # Exit with code 1 if the REGION_ID provided is invalid
 function get_selected_region_data() {
-  regionData="$( echo $all_region_data |
+  regionData="$( echo "$all_region_data" |
   jq --arg REGION_ID "$selectedRegion" -r \
   '.regions[] | select(.id==$REGION_ID)')"
   if [[ ! $regionData ]]; then
@@ -117,18 +115,18 @@ serverlist_url='https://serverlist.piaservers.net/vpninfo/servers/v6'
 printServerLatency() {
   serverIP="$1"
   regionID="$2"
-  regionName="$(echo ${@:3} |
+  regionName="$(echo "${@:3}" |
     sed 's/ false//' | sed 's/true/(geo)/')"
   time=$(LC_NUMERIC=en_US.utf8 curl -o /dev/null -s \
-    --connect-timeout $MAX_LATENCY \
+    --connect-timeout "$MAX_LATENCY" \
     --write-out "%{time_connect}" \
-    http://$serverIP:443)
+    http://"$serverIP":443)
   if [ $? -eq 0 ]; then
-    >&2 echo Got latency ${time}s for region: $regionName id: $regionID
-    echo $time $regionID $serverIP
+    >&2 echo Got latency "${time}"s for region: "$regionName" id: "$regionID"
+    echo "$time" "$regionID" "$serverIP"
     # Write a list of servers with acceptable latancy
     # to /opt/piavpn-manual/latencyList
-    echo -e $time $regionID'\t'$serverIP'\t'$regionName >> /opt/piavpn-manual/latencyList
+    echo -e "$time" "$regionID"'\t'"$serverIP"'\t'"$regionName" >> /opt/piavpn-manual/latencyList
   fi
   # Sort the latencyList, ordered by latency
   sort -no /opt/piavpn-manual/latencyList /opt/piavpn-manual/latencyList
@@ -164,23 +162,23 @@ if [[ $selectedRegion == "none" ]]; then
   if [[ $PIA_PF == "true" ]]; then
     echo Port Forwarding is enabled, non-PF servers excluded.
     echo
-    summarized_region_data="$( echo $all_region_data |
+    summarized_region_data="$( echo "$all_region_data" |
       jq -r '.regions[] | select(.port_forward==true) |
       .servers.meta[0].ip+" "+.id+" "+.name+" "+(.geo|tostring)' )"
   else
-    summarized_region_data="$( echo $all_region_data |
+    summarized_region_data="$( echo "$all_region_data" |
     jq -r '.regions[] |
     .servers.meta[0].ip+" "+.id+" "+.name+" "+(.geo|tostring)' )"
   fi
   echo -e Testing regions that respond \
-    faster than $MAX_LATENCY seconds:
+    faster than "$MAX_LATENCY" seconds:
   selectedRegion="$(echo "$summarized_region_data" |
     xargs -I{} bash -c 'printServerLatency {}' |
     sort | head -1 | awk '{ print $2 }')"
   echo
 
   if [ -z "$selectedRegion" ]; then
-    echo -e No region responded within ${MAX_LATENCY}s, consider using a higher timeout.
+    echo -e No region responded within "${MAX_LATENCY}"s, consider using a higher timeout.
     echo For example, to wait 1 second for each region, inject MAX_LATENCY=1 like this:
     exit 1
   else
@@ -195,19 +193,19 @@ fi
 
 get_selected_region_data
 
-bestServer_meta_IP="$(echo $regionData | jq -r '.servers.meta[0].ip')"
-bestServer_meta_hostname="$(echo $regionData | jq -r '.servers.meta[0].cn')"
-bestServer_WG_IP="$(echo $regionData | jq -r '.servers.wg[0].ip')"
-bestServer_WG_hostname="$(echo $regionData | jq -r '.servers.wg[0].cn')"
-bestServer_OT_IP="$(echo $regionData | jq -r '.servers.ovpntcp[0].ip')"
-bestServer_OT_hostname="$(echo $regionData | jq -r '.servers.ovpntcp[0].cn')"
-bestServer_OU_IP="$(echo $regionData | jq -r '.servers.ovpnudp[0].ip')"
-bestServer_OU_hostname="$(echo $regionData | jq -r '.servers.ovpnudp[0].cn')"
+bestServer_meta_IP="$(echo "$regionData" | jq -r '.servers.meta[0].ip')"
+bestServer_meta_hostname="$(echo "$regionData" | jq -r '.servers.meta[0].cn')"
+bestServer_WG_IP="$(echo "$regionData" | jq -r '.servers.wg[0].ip')"
+bestServer_WG_hostname="$(echo "$regionData" | jq -r '.servers.wg[0].cn')"
+bestServer_OT_IP="$(echo "$regionData" | jq -r '.servers.ovpntcp[0].ip')"
+bestServer_OT_hostname="$(echo "$regionData" | jq -r '.servers.ovpntcp[0].cn')"
+bestServer_OU_IP="$(echo "$regionData" | jq -r '.servers.ovpnudp[0].ip')"
+bestServer_OU_hostname="$(echo "$regionData" | jq -r '.servers.ovpnudp[0].cn')"
 
 
 if [[ $VPN_PROTOCOL == "no" ]]; then
-  echo -ne The $selectedOrLowestLatency region is "$(echo $regionData | jq -r '.name')"
-  if echo $regionData | jq -r '.geo' | grep true > /dev/null; then
+  echo -ne The $selectedOrLowestLatency region is "$(echo "$regionData" | jq -r '.name')"
+  if echo "$regionData" | jq -r '.geo' | grep true > /dev/null; then
     echo " (geolocated region)."
   else
     echo "."
@@ -224,7 +222,6 @@ WireGuard     $bestServer_WG_IP\t-     $bestServer_WG_hostname
 "
 fi
 # Display variables for troubleshooting
-PIA_PF=$PIA_PF
 WG_SERVER_IP=$bestServer_WG_IP
 WG_HOSTNAME=$bestServer_WG_hostname
 
@@ -253,7 +250,7 @@ export pubKey
 # In case you didn't clone the entire repo, get the certificate from:
 # https://github.com/pia-foss/manual-connections/blob/master/ca.rsa.4096.crt
 # In case you want to troubleshoot the script, replace -s with -v.
-echo Trying to connect to the PIA WireGuard API on $WG_SERVER_IP...
+echo Trying to connect to the PIA WireGuard API on "$WG_SERVER_IP"...
 wireguard_json="$(curl -s -G \
   --connect-to "$WG_HOSTNAME::$WG_SERVER_IP:" \
   --cacert "/wireguard-pia/ca.rsa.4096.crt" \
@@ -276,7 +273,7 @@ fi
 # require it.
 if [ "$PIA_DNS" == true ]; then
   dnsServer="$(echo "$wireguard_json" | jq -r '.dns_servers[0]')"
-  echo Trying to set up DNS to $dnsServer. In case you do not have resolvconf,
+  echo Trying to set up DNS to "$dnsServer". In case you do not have resolvconf,
   echo this operation will fail and you will not get a VPN. If you have issues,
   echo start this script without PIA_DNS.
   echo
@@ -285,7 +282,6 @@ else dnsSettingForVPN="DNS =$(echo "$wireguard_json" | jq -r '.dns_servers[0]')"
 fi
 echo -n "Trying to write /config/wg0.conf..."
 
-LAN_NETWORK=${LAN_NETWORK}
 # split comma separated string into array from LAN_NETWORK env variable
 IFS=',' read -ra lan_network_array <<< "${LAN_NETWORK}"
 DROUTE=$(ip route | grep default | awk '{print $3}'); 
@@ -341,8 +337,8 @@ echo "
 Address = $(echo "$wireguard_json" | jq -r '.peer_ip')
 PrivateKey = $privKey
 DNS = $(echo "$wireguard_json" | jq -r '.dns_servers[0]')
-PostUp = "$PostUp"
-PreDown = "$PreDown"
+PostUp = $PostUp
+PreDown = $PreDown
 
 [Peer]
 PersistentKeepalive = 25
